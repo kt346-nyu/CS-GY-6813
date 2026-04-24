@@ -1,0 +1,157 @@
+"""
+This security layer inadequately handles A/B storage for files in RepyV2.
+
+
+Note:
+    This security layer uses encasementlib.r2py, restrictions.default, repy.py and Python
+    Also you need to give it an application to run.
+    python repy.py restrictions.default encasementlib.r2py [security_layer].r2py [attack_program].r2py 
+    
+    """ 
+TYPE="type"
+ARGS="args"
+RETURN="return"
+EXCP="exceptions"
+TARGET="target"
+FUNC="func"
+OBJC="objc"
+
+class ABFile():
+  
+  # Shared class-level registries to manage locks and handles across threads
+  master_lock = createlock()
+  lock_registry = {}
+  handle_registry = {}
+  
+  def __init__(self,filename,create):
+    # globals
+    # in the init function, I will open 2 files (Afile & Bfile). 
+    # If Afile and Bfile don't exist, we must create valid files
+    mycontext['debug'] = False   
+    # local (per object) reference to the underlying file
+
+    # Initialize naming and find the correct lock for this filename
+    self.master_lock.acquire(True)
+    try:
+      self.filename = filename
+      self.Afn = filename + '.a'
+      self.Bfn = filename + '.b'
+
+      if filename not in self.lock_registry:
+        self.lock_registry[filename] = createlock()
+      self.file_lock = self.lock_registry[filename]
+    finally:
+      self.master_lock.release()
+
+    # block until lock is available
+    self.file_lock.acquire(True)
+    try: 
+      # Check if this file is already open in another thread
+      if filename not in self.handle_registry:
+        files = listfiles()    
+      
+        # Check if A file exists. If not, make the file A and add 'SE' to the file.
+        if create or self.Afn not in files:
+          # Create A file with content 'SE' if it doesn't exist or create is True:
+          a_handle = openfile(self.Afn, True)
+          a_handle.writeat('SE', 0)
+        else:
+          a_handle = openfile(self.Afn, False)
+          
+        # Always creates a fresh copy of B from File A, regardless of whether it exists
+        content = a_handle.readat(None, 0)
+        b_handle = openfile(self.Bfn, True)
+        b_handle.writeat(content, 0)
+
+        # Store the shared handles in the registry
+        self.handle_registry[filename] = {'A': a_handle, 'B': b_handle, 'ref': 0}
+      
+      # Update reference count and assign local references to the shared handles
+      self.handle_registry[filename]['ref'] += 1
+      self.Afile = self.handle_registry[filename]['A']
+      self.Bfile = self.handle_registry[filename]['B']
+    finally:
+      self.file_lock.release()
+      # release even if an error occurs
+
+  def writeat(self,data,offset):
+    # Before writing to the B file, we should check if the data is valid. 
+    # If data is valid, write to the B file. Otherwise, ignore the write request.
+    
+    # Write the requested data to the B file using the sandbox's writeat call
+    # In the writeat function, we are passing 2 arguments into this function. 
+    # We want to pass data that is acceptable? In order to define that, we must decide which characters are acceptable. 
+    # we also need to prevent buffer overflow.  If data is acceptable, we should write the data into B file using writeat function
+    
+    self.file_lock.acquire(True)    
+    # block until lock is available
+    
+    try:
+      current_Bfile_content = self.Bfile.readat(None, 0)
+      # check if data is valid. If data is valid, write to the B file.
+      if offset < 0 or ' ' in data or offset > len(current_Bfile_content):
+        return 0
+      return self.Bfile.writeat(data, offset)     
+    finally:
+      self.file_lock.release()
+      # release even if an error occurs
+  
+  def readat(self,bytes,offset):
+    self.file_lock.acquire(True)
+    # block until lock is available
+    try:
+      # Read from the A file using the sandbox's readat...
+      return self.Afile.readat(bytes,offset)
+    finally:
+      self.file_lock.release()
+      # release even if an error occurs
+
+  def close(self):
+    # on close, if the bfile has the right designation (starts with S and ends with E), writedata to the A file
+    # Before closing both files. We should check if both A and B are the same.
+    
+    self.file_lock.acquire(True)
+    try:
+      # Decrement reference count for this handle
+      self.handle_registry[self.filename]['ref'] -= 1
+      
+      # Final operations only occur when the last thread closes the file
+      if self.handle_registry[self.filename]['ref'] <= 0:
+        new_data = self.Bfile.readat(None, 0)
+
+        # check if data in File B starts with S and ends with E
+        if new_data.startswith('S') and new_data.endswith('E'):
+          # if data is valid, overwrite File A with file B's content
+          self.Afile.close()
+          self.Afile = openfile(self.Afn, True)
+          self.Afile.writeat(new_data, 0)
+
+        # Close file A and B  
+        try:
+          self.Afile.close()
+          self.Bfile.close()
+        except:
+          pass
+        
+        # Clean up the registry
+        del self.handle_registry[self.filename]
+        
+    finally:
+      self.file_lock.release()
+
+def ABopenfile(filename, create):
+  return ABFile(filename,create)
+
+# The code here sets up type checking and variable hiding for you.  You
+# should not need to change anything below here.
+sec_file_def = {"obj-type":ABFile,
+                "name":"ABFile",
+                "writeat":{"type":"func","args":(str,int),"exceptions":Exception,"return":(int,type(None)),"target":ABFile.writeat},
+                "readat":{"type":"func","args":((int,type(None)),(int)),"exceptions":Exception,"return":str,"target":ABFile.readat},
+                "close":{"type":"func","args":None,"exceptions":None,"return":(bool,type(None)),"target":ABFile.close}
+           }
+
+CHILD_CONTEXT_DEF["ABopenfile"] = {TYPE:OBJC,ARGS:(str,bool),EXCP:Exception,RETURN:sec_file_def,TARGET:ABopenfile}
+
+# Execute the user code
+secure_dispatch_module()
