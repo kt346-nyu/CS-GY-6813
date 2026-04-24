@@ -1,0 +1,80 @@
+# INVALID DATA ATTACK
+# Exploits space check only checking for ' ' not all whitespace
+
+def cleanup():
+  if "testfile.txt.a" in listfiles():
+    removefile("testfile.txt.a")
+  if "testfile.txt.b" in listfiles():
+    removefile("testfile.txt.b")
+
+cleanup()
+
+# Open file
+myfile = ABopenfile("testfile.txt", True)
+
+# What should Afile have: SE
+# What should Bfile have: SE
+try:
+  assert('SE' == myfile.readat(None, 0))
+  assert('SE' == myfile.Bfile.readat(None, 0))
+except:
+  myfile.close()
+  log("Initial file data incorrect!")
+
+# Attack 1 — tab character bypasses space check
+# ' ' in "S\ttabE" is False so monitor allows it
+myfile.writeat("S\ttabE", 0)
+
+# What should Afile have: SE
+# What should Bfile have: SE — tab write should be rejected
+try:
+  assert('SE' == myfile.readat(None, 0))
+  assert('SE' == myfile.Bfile.readat(None, 0))
+except:
+  myfile.close()
+  log("Tab character bypassed blank character check!")
+
+# Attack 2 — newline character bypasses space check
+# ' ' in "S\nnewlineE" is False so monitor allows it
+myfile.writeat("S\nnewlineE", 0)
+
+# What should Afile have: SE
+# What should Bfile have: SE — newline write should be rejected
+try:
+  assert('SE' == myfile.readat(None, 0))
+  assert('SE' == myfile.Bfile.readat(None, 0))
+except:
+  myfile.close()
+  log("Newline bypassed blank character check!")
+
+# Attack 3 — write data longer than current B length
+# offset(0) < len('SE')(2) passes check
+# but data extends past B length causing corruption
+myfile.writeat("Stest12345E", 0)
+
+# What should Afile have: SE
+# What should Bfile have: SE — longer write should be rejected
+try:
+  assert('SE' == myfile.readat(None, 0))
+  assert('SE' == myfile.Bfile.readat(None, 0))
+except:
+  myfile.close()
+  log("Write longer than B length was not rejected!")
+
+# Close file
+myfile.close()
+
+# Reopen and verify final state
+myfile = ABopenfile("testfile.txt", False)
+
+# What should Afile have: SE
+# What should Bfile have: SE
+try:
+  assert('SE' == myfile.readat(None, 0))
+  assert('SE' == myfile.Bfile.readat(None, 0))
+  myfile.close()
+except:
+  myfile.close()
+  log("Final file state incorrect after invalid writes!")
+
+cleanup()
